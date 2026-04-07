@@ -8,17 +8,14 @@ from openpyxl import load_workbook
 TIMECOUNT = 4
 LOGIN_URL = "https://secure.vantagemarkets.com/login"
 EXCEL_FILE = "accounts.xlsx"
-MAX_CONCURRENT = 2
-
-ONE = 1
-TWO = 2
-THREE = 3
-
+MAX_CONCURRENT = 2 # Số cửa sổ mở cùng lúc
 WIDTH = 960
 HEIGHT = 540
+
 async def login_account(email, password, index):
-    x = (index % 2) * WIDTH
-    y = (index // 2) * HEIGHT
+    quadrant = index % 4
+    x = (quadrant % 2) * WIDTH
+    y = (quadrant // 2) * HEIGHT
     
     args = [
         f"--window-size={WIDTH},{HEIGHT}",
@@ -26,95 +23,111 @@ async def login_account(email, password, index):
         "--no-first-run",
     ]
 
-    browser = await uc.start(args=args, headless=False)
+    browser = await uc.start(browser_args=args, headless=False)
     status = ""
 
     try:
         page = await browser.get(LOGIN_URL)        
-        await asyncio.sleep(TIMECOUNT) 
+        await asyncio.sleep(TIMECOUNT * 2)
 
-        # ĐĂNG NHẬP VÀO TÀI KHOẢN VANTAGE MARKETS
-        #Email
+        # 1. Nhập Email
         try:
             email_field = await page.wait_for('input[data-testid="userName_login"]', timeout=TIMECOUNT)
             await email_field.send_keys(email)
         except Exception:
-            status = "ERROR: Dont Find Email Input."
-            
+            return email, "ERROR: Không tìm thấy ô Email."
 
-        # Password
+        # 2. Nhập Password
         try:
             pass_field = await page.select('input[type="password"]') 
             await pass_field.send_keys(password)
         except Exception:
-            status = "ERROR: Dont Find Password Input."
+            return email, "ERROR: Không tìm thấy ô Password."
 
-        # Đăng nhập
+
+        # 3. Click Đăng nhập
         try:
             login_btn = await page.wait_for('button[data-testid="login"]', timeout=TIMECOUNT)
             await login_btn.click()
         except Exception:
-            status = "ERROR: Dont Find Login Button."
+            return email, "ERROR: Không tìm thấy nút Login."
         
-        status = "Success"
-
-        await asyncio.sleep(TIMECOUNT * 5)
-
-        
+        # 4. Kiểm tra URL xem đã qua được trang login chưa
+        await asyncio.sleep(TIMECOUNT * 3)
+        if "login" not in page.url.lower():
+            status = "Success"
+        else:
+            return email, "Failed: Sai mật khẩu hoặc bị chặn"
+            
     except Exception as e:
-        print(f"ERROR: {e}")
+        status = f"ERROR: {str(e)[:20]}"
     finally:
         browser.stop()
-        
         return email, status
 
-def update_excel_status(email, status):
+def update_all_excel_status(results):
     try:
         wb = load_workbook(EXCEL_FILE)
         ws = wb.active
         
-        header = [cell.value for cell in ws[ONE]]
+        # Tìm index của cột Email và Status
+        header = [cell.value for cell in ws[1]]
         try:
-            email_col = header.index("Email") + ONE
-            status_col = header.index("Status") + ONE
+            email_col = header.index("Email") + 1
+            status_col = header.index("Status") + 1
         except ValueError:
-            print("[!] Không tìm thấy tiêu đề Email hoặc Status trong file!")
+            print("[!] Lỗi: Không tìm thấy cột 'Email' hoặc 'Status' trong Excel!")
             return
 
-        for row in range(TWO, ws.max_row + ONE):
-            if str(ws.cell(row=row, column=email_col).value).strip() == email:
-                ws.cell(row=row, column=status_col).value = status
-                break
+        # Chuyển list results thành dictionary {email: status} để tra cứu
+        result_dict = dict(results)
+
+        # Ghi data vào file
+        for row in range(2, ws.max_row + 1):
+            cell_email = str(ws.cell(row=row, column=email_col).value).strip()
+            if cell_email in result_dict:
+                ws.cell(row=row, column=status_col).value = result_dict[cell_email]
         
         wb.save(EXCEL_FILE)
+        print(f"[*] Đã lưu thành công toàn bộ trạng thái vào {EXCEL_FILE}")
     except Exception as e:
         print(f"[!] Lỗi khi ghi Excel: {e}")
 
 async def main():
     if not os.path.exists(EXCEL_FILE):
-        print(f"ERROR: Dont Find {EXCEL_FILE}")
+        print(f"ERROR: Không tìm thấy file {EXCEL_FILE}")
         return
 
-    # Đọc dữ liệu từ Excel
     df = pd.read_excel(EXCEL_FILE)
-    tasks = []
-
-    print(f"Excel file '{EXCEL_FILE}' loaded successfully. Total accounts: {len(df)}")
+    print(f"[*] Tìm thấy {len(df)} tài khoản. Đang khởi chạy tối đa {MAX_CONCURRENT} luồng...")
     print("-" * 30)
 
-    for index, row in df.head(MAX_CONCURRENT).iterrows():
+    # Dùng Semaphore để giới hạn số luồng (mở cùng lúc 2 cửa sổ, đóng cái nào mở bù cái đó)
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+    tasks = []
+
+    async def safe_login(email, password, index):
+        async with semaphore:
+            return await login_account(email, password, index)
+
+    for index, row in df.iterrows():
         email = str(row['Email']).strip()
         password = str(row['Password']).strip()
-        
-        tasks.append(login_account(email, password, index))
+        tasks.append(safe_login(email, password, index))
 
     results = await asyncio.gather(*tasks)
 
+    # In kết quả ra màn hình
     for email, res in results:
-        print(f"Tài khoản {email} kết thúc với trạng thái: {res}")
-        print("-" * 30)
+        print(f"[>] {email}: {res}")
+    print("=" * 30)
 
-    print("[FINISH] All accounts processed.")
+    # GỌI HÀM LƯU EXCEL ĐÃ VIẾT (Bản cũ bạn quên gọi hàm này)
+    if results:
+        print("Đang ghi vào file Excel...")
+        update_all_excel_status(results)
+
+    print("[FINISH] Hoàn thành toàn bộ quy trình.")
 
 if __name__ == "__main__":
     uc.loop().run_until_complete(main())
