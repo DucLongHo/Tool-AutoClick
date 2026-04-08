@@ -3,19 +3,25 @@ import asyncio
 import pandas as pd
 import os
 from openpyxl import load_workbook
+import pyautogui
 
 # --- HẰNG SỐ CẤU HÌNH ---
-TIMECOUNT = 4
+TIMECOUNT = 5
 LOGIN_URL = "https://secure.vantagemarkets.com/login"
 EXCEL_FILE = "accounts.xlsx"
-MAX_CONCURRENT = 2 # Số cửa sổ mở cùng lúc
-WIDTH = 960
-HEIGHT = 540
+MAX_CONCURRENT = 6 # Số cửa sổ mở cùng lúc
+
+screen_width, screen_height = pyautogui.size()
+COLS = 3
+ROWS = 2
+
+WIDTH = screen_width // COLS   
+HEIGHT = screen_height // ROWS 
 
 async def login_account(email, password, index):
-    quadrant = index % 4
-    x = (quadrant % 2) * WIDTH
-    y = (quadrant // 2) * HEIGHT
+    quadrant = index % 6
+    x = (quadrant % COLS) * WIDTH
+    y = (quadrant // COLS) * HEIGHT
     
     args = [
         f"--window-size={WIDTH},{HEIGHT}",
@@ -28,7 +34,7 @@ async def login_account(email, password, index):
 
     try:
         page = await browser.get(LOGIN_URL)        
-        await asyncio.sleep(TIMECOUNT * 2)
+        await asyncio.sleep(TIMECOUNT)
 
         # 1. Nhập Email
         try:
@@ -53,7 +59,7 @@ async def login_account(email, password, index):
             return email, "ERROR: Không tìm thấy nút Login."
         
         # 4. Kiểm tra URL xem đã qua được trang login chưa
-        await asyncio.sleep(TIMECOUNT * 3)
+        await asyncio.sleep(TIMECOUNT)
         if "login" not in page.url.lower():
             status = "Success"
         else:
